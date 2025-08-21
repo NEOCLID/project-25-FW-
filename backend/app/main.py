@@ -1,15 +1,15 @@
-# ====== FastAPI: /ingest (single/batch) & retrieval (SQLite) ======
+# ====== FastAPI: /ingest & retrieval (SQLite) ======
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import List, Optional
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field
 import sqlite3
 
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="FSR Ingest")
+app = FastAPI(title="Smart Seat Ingest")
 
-# CORS (dev: allow all; tighten for prod)
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,156 +18,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_FILE = "data.db"
+DB_FILE = "seat_data.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
-        CREATE TABLE IF NOT EXISTS measurements (
+        CREATE TABLE IF NOT EXISTS seat_measurements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_id TEXT NOT NULL,
-            value INTEGER NOT NULL,
-            ts_server TEXT NOT NULL,
-            ts_client TEXT
+            pressure_1 INTEGER, pressure_2 INTEGER, pressure_3 INTEGER,
+            pressure_4 INTEGER, pressure_5 INTEGER, pressure_6 INTEGER,
+            distance_1 INTEGER, distance_2 INTEGER,
+            ts_server TEXT NOT NULL
         )
     """)
-    c.execute("CREATE INDEX IF NOT EXISTS idx_measurements_device_id ON measurements(device_id, id)")
     conn.commit()
     conn.close()
 
 init_db()
 
-class Measurement(BaseModel):
+class SeatMeasurement(BaseModel):
     device_id: str = Field(..., min_length=1)
-    value: Optional[int] = Field(None, ge=0, le=4096)      # ESP32: 12-bit range
-    values: Optional[List[int]] = None                     # Batch values
-    ts: Optional[datetime] = None                          # Optional client timestamp
+    pressure: List[int] = Field(..., min_items=6, max_items=6)
+    distance: List[int] = Field(..., min_items=2, max_items=2)
 
-    # v2: use model_validator instead of root_validator
-    @model_validator(mode="after")
-    def check_exclusive_fields(self):
-        has_value = self.value is not None
-        has_values = self.values is not None
-        if has_value == has_values:  # both given or both missing
-            raise ValueError("Exactly one of 'value' or 'values' must be provided.")
-        return self
+@app.post("/ingest")
+def ingest(m: SeatMeasurement):
+    ts_server = datetime.now(timezone.utc).isoformat()
 
-    # v2: use field_validator (replaces validator(..., each_item=True))
-    @field_validator("values")
-    @classmethod
-    def validate_values(cls, v):
-        if v is None:
-            return v
-        for item in v:
-            if not (0 <= item <= 4096):
-                raise ValueError("each value in 'values' must be in range 0..4095")
-        return v
-
-store: List[dict] = []
-
-def insert_row(device_id: str, value: int, ts_server: str, ts_client: Optional[str]):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
-        INSERT INTO measurements (device_id, value, ts_server, ts_client)
-        VALUES (?, ?, ?, ?)
-    """, (device_id, value, ts_server, ts_client))
+        INSERT INTO seat_measurements (device_id, pressure_1, pressure_2, pressure_3, pressure_4, pressure_5, pressure_6, distance_1, distance_2, ts_server)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (m.device_id, m.pressure[0], m.pressure[1], m.pressure[2], m.pressure[3], m.pressure[4], m.pressure[5], m.distance[0], m.distance[1], ts_server))
     conn.commit()
     conn.close()
 
-@app.post("/ingest")
-def ingest(m: Measurement):
-    ts_server = datetime.now(timezone.utc).isoformat()
-    ts_client = m.ts.isoformat() if m.ts else None
+    print(f"[INGEST] device_id={m.device_id}, pressure={m.pressure}, distance={m.distance}, ts_server={ts_server}")
 
-    if m.values is not None:
-        # expand and store each channel, but respond with values only
-        for idx, val in enumerate(m.values):
-            dev = f"{m.device_id}-ch{idx}"
-            rec = {
-                "device_id": dev,
-                "value": val,
-                "ts_server": ts_server,
-                "ts_client": ts_client
-            }
-            store.append(rec)
-            insert_row(rec["device_id"], rec["value"], rec["ts_server"], rec["ts_client"])
+    return {"status": "ok"}
 
-        # log without id/count
-        print(f"[INGEST/BATCH] values={m.values}, ts_server={ts_server}")
-
-        # respond with sensor values only (JSON array)
-        return m.values
-
-    else:
-        rec = {
-            "device_id": m.device_id,
-            "value": m.value,   # type: ignore
-            "ts_server": ts_server,
-            "ts_client": ts_client
-        }
-        store.append(rec)
-        insert_row(rec["device_id"], rec["value"], rec["ts_server"], rec["ts_client"])
-
-        # log without id
-        print(f"[INGEST] value={m.value}, ts_server={ts_server}")
-
-        # respond with the single sensor value only (plain number)
-        return m.value
-
-
-@app.get("/latest")
-def latest(device_id: str):
+@app.get("/latest_seat_data")
+def latest_seat_data():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("""
-        SELECT device_id, value, ts_server, ts_client
-        FROM measurements
-        WHERE device_id = ?
+        SELECT device_id, pressure_1, pressure_2, pressure_3, pressure_4, pressure_5, pressure_6, distance_1, distance_2, ts_server
+        FROM seat_measurements
         ORDER BY id DESC
         LIMIT 1
-    """, (device_id,))
+    """)
     row = c.fetchone()
     conn.close()
 
     if row:
         return {
             "device_id": row[0],
-            "value": row[1],
-            "ts_server": row[2],
-            "ts_client": row[3]
+            "pressure": [row[1], row[2], row[3], row[4], row[5], row[6]],
+            "distance": [row[7], row[8]],
+            "ts_server": row[9]
         }
-    raise HTTPException(404, f"No data for device_id={device_id}")
-
-@app.get("/all")
-def all_records(device_id: Optional[str] = None):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    if device_id:
-        c.execute("""
-            SELECT device_id, value, ts_server, ts_client
-            FROM measurements
-            WHERE device_id = ?
-            ORDER BY id DESC
-        """, (device_id,))
-    else:
-        c.execute("""
-            SELECT device_id, value, ts_server, ts_client
-            FROM measurements
-            ORDER BY id DESC
-        """)
-
-    rows = c.fetchall()
-    conn.close()
-
-    return [
-        {
-            "device_id": r[0],
-            "value": r[1],
-            "ts_server": r[2],
-            "ts_client": r[3]
-        }
-        for r in rows
-    ]
+    raise HTTPException(404, "No data available")

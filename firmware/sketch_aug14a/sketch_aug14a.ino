@@ -1,18 +1,14 @@
 /*
-  Smart Seat Project - Main Application Sketch (Final Version)
+  Hardware Test Sketch for Smart Seat Project - V4
 
-  This firmware reads data from 6 pressure sensors and 2 distance sensors,
-  controls two DC motors based on pressure distribution, and sends the
-  sensor data to a backend server for visualization.
+  This sketch uses the final, stable pin configuration and adds a 
+  pressure tolerance to prevent motor jitter.
 
-  - Final, stable pin configuration for all sensors.
-  - Includes pressure tolerance to prevent motor jitter.
-  - Includes robust, sequential reading for HC-SR04 distance sensors.
+  V4 Changes:
+  - Moved all pressure sensors to stable ADC1 pins to fix high default readings.
+  - Added PRESSURE_TOLERANCE to the motor logic.
+  - Clarified code comments for motor control logic.
 */
-
-// ====== INCLUDES ======
-#include <WiFi.h>
-#include <HTTPClient.h>
 
 // ====== PIN DEFINITIONS (Final Stable Configuration) ======
 
@@ -28,28 +24,20 @@ const int NUM_DISTANCE_SENSORS = 2;
 // Motor Driver (L298N)
 const int MOTOR_A_IN1 = 12; // Corresponds to L298N IN1
 const int MOTOR_A_IN2 = 13; // Corresponds to L298N IN2
-const int MOTOR_B_IN1 = 5;  // Corresponds to L298N IN3
-const int MOTOR_B_IN2 = 23; // Corresponds to L298N IN4
+const int MOTOR_B_IN1 = 23;  // Corresponds to L298N IN3
+const int MOTOR_B_IN2 = 5; // Corresponds to L298N IN4
 
-// ====== WI-FI & SERVER ======
-const char* WIFI_SSID     = "your_wifi_ssid";      // <-- IMPORTANT: Replace with your WiFi network name
-const char* WIFI_PASSWORD = "your_wifi_password";  // <-- IMPORTANT: Replace with your WiFi password
-const char* SERVER_URL    = "http://192.168.1.100:8000/ingest"; // <-- IMPORTANT: Replace with your computer's IP address
-const char* BASE_DEVICE_ID = "smart-seat-01";
-
-// ====== CONSTANTS & TIMING ======
+// ====== CONSTANTS ======
 const int TARGET_DISTANCE_MM = 100;
 const int PRESSURE_TOLERANCE = 100; // Dead zone for pressure sum comparison
 const unsigned long MAX_DISTANCE_TIMEOUT_US = 30000; // Timeout for pulseIn
-const uint32_t SAMPLE_INTERVAL_MS = 200; // Sample and send data every 200ms (5 Hz)
-uint32_t lastSampleMs = 0;
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("Smart Seat Main Application Starting...");
+  Serial.println("Hardware Test V4 Initialized...");
 
-  // Pin initializations
+  // Pin initializations...
   for (int i = 0; i < NUM_PRESSURE_SENSORS; ++i) {
     pinMode(PRESSURE_SENSOR_PINS[i], INPUT);
   }
@@ -61,20 +49,19 @@ void setup() {
   pinMode(MOTOR_A_IN2, OUTPUT);
   pinMode(MOTOR_B_IN1, OUTPUT);
   pinMode(MOTOR_B_IN2, OUTPUT);
-
-  waitForWiFi();
 }
 
 void loop() {
-  uint32_t now = millis();
-  if (now - lastSampleMs < SAMPLE_INTERVAL_MS) return;
-  lastSampleMs = now;
+  Serial.println("\n----- New Reading Cycle -----");
 
   int pressureValues[NUM_PRESSURE_SENSORS];
   long distanceValues[NUM_DISTANCE_SENSORS];
+
   readSensors(pressureValues, distanceValues);
+  printSensorValues(pressureValues, distanceValues);
   controlMotors(pressureValues, distanceValues);
-  postData(pressureValues, distanceValues);
+
+  delay(2000);
 }
 
 void readSensors(int pressureValues[], long distanceValues[]) {
@@ -85,6 +72,22 @@ void readSensors(int pressureValues[], long distanceValues[]) {
     distanceValues[i] = readDistance(i);
     delay(50);
   }
+}
+
+void printSensorValues(const int pVals[], const long dVals[]) {
+  Serial.print("Pressure Values: [");
+  for (int i = 0; i < NUM_PRESSURE_SENSORS; ++i) {
+    Serial.print(pVals[i]);
+    if (i < NUM_PRESSURE_SENSORS - 1) Serial.print(", ");
+  }
+  Serial.println("]");
+
+  Serial.print("Distance Values (mm): [");
+  for (int i = 0; i < NUM_DISTANCE_SENSORS; ++i) {
+    Serial.print(dVals[i]);
+    if (i < NUM_DISTANCE_SENSORS - 1) Serial.print(", ");
+  }
+  Serial.println("]");
 }
 
 long readDistance(int sensorIndex) {
@@ -102,67 +105,32 @@ void controlMotors(const int pressureValues[], const long distanceValues[]) {
   int sumLeft = pressureValues[0] + pressureValues[1] + pressureValues[2];
   int sumRight = pressureValues[3] + pressureValues[4] + pressureValues[5];
 
-  // --- Motor A (Left) Logic ---
+  Serial.print("Pressure Sums -> Left: "); Serial.print(sumLeft);
+  Serial.print(", Right: "); Serial.println(sumRight);
+
+  // ---
+  // Trigger: Left pressure is significantly higher than right.
+  // Limit: Left distance has not reached the target height.
   if ((sumLeft > sumRight + PRESSURE_TOLERANCE) && (distanceValues[0] < TARGET_DISTANCE_MM && distanceValues[0] != -1)) {
+    Serial.println("Action: Activating Left Motor (Forward)");
     digitalWrite(MOTOR_A_IN1, HIGH);
     digitalWrite(MOTOR_A_IN2, LOW);
   } else {
+    Serial.println("Action: Stopping Left Motor");
     digitalWrite(MOTOR_A_IN1, LOW);
     digitalWrite(MOTOR_A_IN2, LOW);
   }
 
-  // --- Motor B (Right) Logic ---
+  // ---
+  // Trigger: Right pressure is significantly higher than left.
+  // Limit: Right distance has not reached the target height.
   if ((sumRight > sumLeft + PRESSURE_TOLERANCE) && (distanceValues[1] < TARGET_DISTANCE_MM && distanceValues[1] != -1)) {
+    Serial.println("Action: Activating Right Motor (Forward)");
     digitalWrite(MOTOR_B_IN1, HIGH);
     digitalWrite(MOTOR_B_IN2, LOW);
   } else {
+    Serial.println("Action: Stopping Right Motor");
     digitalWrite(MOTOR_B_IN1, LOW);
     digitalWrite(MOTOR_B_IN2, LOW);
   }
-}
-
-void waitForWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED && millis() < 20000) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("Connected! IP Address: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("Failed to connect to WiFi.");
-  }
-}
-
-void postData(const int pressureValues[], const long distanceValues[]) {
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  HTTPClient http;
-  http.begin(SERVER_URL);
-  http.addHeader("Content-Type", "application/json");
-
-  String json = "{\"device_id\":\"" + String(BASE_DEVICE_ID) + "",";
-  json += "\"pressure\":[";
-  for (int i = 0; i < NUM_PRESSURE_SENSORS; ++i) {
-    json += String(pressureValues[i]);
-    if (i < NUM_PRESSURE_SENSORS - 1) json += ",";
-  }
-  json += "]},\"distance\":[";
-  for (int i = 0; i < NUM_DISTANCE_SENSORS; ++i) {
-    json += String(distanceValues[i]);
-    if (i < NUM_DISTANCE_SENSORS - 1) json += ",";
-  }
-  json += "]}";
-
-  int httpCode = http.POST(json);
-  if (httpCode > 0) {
-    Serial.printf("POST sent. Code: %d\n", httpCode);
-  } else {
-    Serial.printf("POST failed, error: %s\n", http.errorToString(httpCode).c_str());
-  }
-  http.end();
 }
