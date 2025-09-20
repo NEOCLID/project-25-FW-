@@ -1,0 +1,8 @@
+# Ignore Node.js dependencies
+node_modules/
+
+# Ignore Flutter/Dart project folder
+universeat/
+
+# Ignore PDF files
+*.pdf
