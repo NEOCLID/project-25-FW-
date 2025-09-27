@@ -1,43 +1,35 @@
-/*
-  Hardware Test Sketch for Smart Seat Project - V4
+/**
+ * @file hardware_test_v4.ino
+ * @brief Hardware test for the Smart Seat.
+ * 
+ * V4 Changes:
+ * - Pressure sensors moved to stable ADC1 pins.
+ * - Added PRESSURE_TOLERANCE to prevent motor jitter.
+ */
 
-  This sketch uses the final, stable pin configuration and adds a 
-  pressure tolerance to prevent motor jitter.
-
-  V4 Changes:
-  - Moved all pressure sensors to stable ADC1 pins to fix high default readings.
-  - Added PRESSURE_TOLERANCE to the motor logic.
-  - Clarified code comments for motor control logic.
-*/
-
-// ====== PIN DEFINITIONS (Final Stable Configuration) ======
-
-// Pressure Sensors (FSRs) - All pins are on the stable ADC1 unit
-const int PRESSURE_SENSOR_PINS[6] = {39, 36, 34, 35, 32, 33};
+// ====== PIN DEFINITIONS ======
+const int PRESSURE_SENSOR_PINS[6] = {39, 36, 34, 35, 32, 33}; // FSRs on ADC1
 const int NUM_PRESSURE_SENSORS = 6;
 
-// Distance Sensors (HC-SR04)
-const int DISTANCE_TRIG_PINS[2] = {26, 17};
-const int DISTANCE_ECHO_PINS[2] = {25, 16};
+const int DISTANCE_TRIG_PINS[2] = {26, 17}; // HC-SR04 Trig
+const int DISTANCE_ECHO_PINS[2] = {25, 16}; // HC-SR04 Echo
 const int NUM_DISTANCE_SENSORS = 2;
 
-// Motor Driver (L298N)
-const int MOTOR_A_IN1 = 12; // Corresponds to L298N IN1
-const int MOTOR_A_IN2 = 13; // Corresponds to L298N IN2
-const int MOTOR_B_IN1 = 5;  // Corresponds to L298N IN3
-const int MOTOR_B_IN2 = 23; // Corresponds to L298N IN4
+const int MOTOR_A_IN1 = 12; // L298N IN1
+const int MOTOR_A_IN2 = 13; // L298N IN2
+const int MOTOR_B_IN1 = 5;  // L298N IN3
+const int MOTOR_B_IN2 = 23; // L298N IN4
 
 // ====== CONSTANTS ======
 const int TARGET_DISTANCE_MM = 100;
 const int PRESSURE_TOLERANCE = 100; // Dead zone for pressure sum comparison
-const unsigned long MAX_DISTANCE_TIMEOUT_US = 30000; // Timeout for pulseIn
+const unsigned long MAX_DISTANCE_TIMEOUT_US = 30000; // pulseIn timeout
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("Hardware Test V4 Initialized...");
+  Serial.println("Hardware Test V4 Initialized");
 
-  // Pin initializations...
   for (int i = 0; i < NUM_PRESSURE_SENSORS; ++i) {
     pinMode(PRESSURE_SENSOR_PINS[i], INPUT);
   }
@@ -52,8 +44,6 @@ void setup() {
 }
 
 void loop() {
-  Serial.println("\n----- New Reading Cycle -----");
-
   int pressureValues[NUM_PRESSURE_SENSORS];
   long distanceValues[NUM_DISTANCE_SENSORS];
 
@@ -75,14 +65,14 @@ void readSensors(int pressureValues[], long distanceValues[]) {
 }
 
 void printSensorValues(const int pVals[], const long dVals[]) {
-  Serial.print("Pressure Values: [");
+  Serial.print("Pressure: [");
   for (int i = 0; i < NUM_PRESSURE_SENSORS; ++i) {
     Serial.print(pVals[i]);
     if (i < NUM_PRESSURE_SENSORS - 1) Serial.print(", ");
   }
   Serial.println("]");
 
-  Serial.print("Distance Values (mm): [");
+  Serial.print("Distance (mm): [");
   for (int i = 0; i < NUM_DISTANCE_SENSORS; ++i) {
     Serial.print(dVals[i]);
     if (i < NUM_DISTANCE_SENSORS - 1) Serial.print(", ");
@@ -97,39 +87,30 @@ long readDistance(int sensorIndex) {
   delayMicroseconds(10);
   digitalWrite(DISTANCE_TRIG_PINS[sensorIndex], LOW);
   long duration_us = pulseIn(DISTANCE_ECHO_PINS[sensorIndex], HIGH, MAX_DISTANCE_TIMEOUT_US);
-  if (duration_us == 0) return -1;
-  return duration_us * 343 / 2000;
+  if (duration_us == 0) return -1; // Timeout
+  return duration_us * 343 / 2000; // Convert to mm
 }
 
 void controlMotors(const int pressureValues[], const long distanceValues[]) {
   int sumLeft = pressureValues[0] + pressureValues[1] + pressureValues[2];
   int sumRight = pressureValues[3] + pressureValues[4] + pressureValues[5];
 
-  Serial.print("Pressure Sums -> Left: "); Serial.print(sumLeft);
-  Serial.print(", Right: "); Serial.println(sumRight);
+  int pressureDifference = sumLeft - sumRight;
 
-  // ---
-  // Trigger: Left pressure is significantly higher than right.
-  // Limit: Left distance has not reached the target height.
-  if ((sumLeft > sumRight + PRESSURE_TOLERANCE) && (distanceValues[0] < TARGET_DISTANCE_MM && distanceValues[0] != -1)) {
-    Serial.println("Action: Activating Left Motor (Forward)");
+  // Left Motor: Activate if left pressure is high and distance is below target
+  if (pressureDifference > PRESSURE_TOLERANCE && (distanceValues[0] < TARGET_DISTANCE_MM && distanceValues[0] != -1)) {
     digitalWrite(MOTOR_A_IN1, HIGH);
     digitalWrite(MOTOR_A_IN2, LOW);
   } else {
-    Serial.println("Action: Stopping Left Motor");
     digitalWrite(MOTOR_A_IN1, LOW);
     digitalWrite(MOTOR_A_IN2, LOW);
   }
 
-  // ---
-  // Trigger: Right pressure is significantly higher than left.
-  // Limit: Right distance has not reached the target height.
-  if ((sumRight > sumLeft + PRESSURE_TOLERANCE) && (distanceValues[1] < TARGET_DISTANCE_MM && distanceValues[1] != -1)) {
-    Serial.println("Action: Activating Right Motor (Forward)");
+  // Right Motor: Activate if right pressure is high and distance is below target
+  if (pressureDifference < -PRESSURE_TOLERANCE && (distanceValues[1] < TARGET_DISTANCE_MM && distanceValues[1] != -1)) {
     digitalWrite(MOTOR_B_IN1, HIGH);
     digitalWrite(MOTOR_B_IN2, LOW);
   } else {
-    Serial.println("Action: Stopping Right Motor");
     digitalWrite(MOTOR_B_IN1, LOW);
     digitalWrite(MOTOR_B_IN2, LOW);
   }

@@ -6,3 +6,12 @@ universeat/
 
 # Ignore PDF files
 *.pdf
+
+# Ignore text files
+*.txt
+
+# Ignore database files
+*.db
+
+# Ignore virtual environment
+.venv/
